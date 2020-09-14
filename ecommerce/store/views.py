@@ -1,12 +1,20 @@
 from django.shortcuts import render
+from django.http import JsonResponse
+import json
+import datetime
 
 from .models import *
+from .utils import cookieCart, cartData, guessOrder
 
 
 # Create your views here.
 def store(request):
+
+    data = cartData(request)
+    cartItem = data["cartItem"]
+
     products = Product.objects.all()
-    context = {'products':products}
+    context = {'products':products, 'cartItem':cartItem}
     return render(request, 'store/store.html', context)
 
 def cart(request):
@@ -15,21 +23,78 @@ def cart(request):
         customer = request.user.customer
         order, created  = Order.objects.get_or_create(customer=customer, complete=False)
         items = order.orderitem_set.all()
+        cartItem = order.get_cart_items
     else:
-        items = []
-        order = {'get_cart_total':0, 'get_cart_items':0}
+        cookieData = cookieCart(request)
+        cartItem = cookieData['cartItem']
+        order = cookieData['order']
+        items = cookieData['items']
 
-    context = {'items':items, 'order':order}
+    context = {'items':items, 'order':order, 'cartItem':cartItem}
     return render(request, 'store/cart.html', context)
 
 def checkout(request):
+
+    data = cartData(request)
+    cartItem = data['cartItem']
+    items = data['items']
+    order = data['order']
+
+    context = {'items':items, 'order':order, 'cartItem':cartItem}
+    return render(request, 'store/checkout.html', context)
+
+
+def updateItem(request):
+    data = json.loads(request.body)
+    productId = data['productId']
+    action = data['action']
+
+    print('action:', action)
+    print('productId:', productId)
+
+    customer = request.user.customer
+    product = Product.objects.get(id=productId)
+    order, created  = Order.objects.get_or_create(customer=customer, complete=False)
+
+    orderItem, created = OrderItem.objects.get_or_create(order=order, product=product)
+
+    if action == 'add':
+        orderItem.quantity = (orderItem.quantity + 1)
+    elif action == 'remove':
+        orderItem.quantity = (orderItem.quantity - 1)
+
+    orderItem.save()
+
+    if orderItem.quantity <= 0:
+        orderItem.delete()
+
+    return JsonResponse("Item was added", safe=False)
+
+def processOrder(request):
+    transction_id = datetime.datetime.now().timestamp()
+    data = json.loads(request.body)
+
     if request.user.is_authenticated:
         customer = request.user.customer
-        order, created  = Order.objects.get_or_create(customer=customer, complete=False)
-        items = order.orderitem_set.all()
-    else:
-        items = []
-        order = {'get_cart_total':0, 'get_cart_items':0}
+        order, created = Order.objects.get_or_create(customer=customer, complete=False)
 
-    context = {'items':items, 'order':order}
-    return render(request, 'store/checkout.html', context)
+    else:
+        customer, order = guessOrder(request, data)
+        
+    total = float(data['form']['total'])
+    order.transction_id = transction_id
+
+    if (total == float(order.get_cart_total)):
+        order.complete = True
+    order.save()
+    if (order.shipping == True):
+        ShippingAddress.objects.create(
+                customer = customer,
+                order = order,
+                address = data['shipping']['address'],
+                city = data['shipping']['city'],
+                state = data['shipping']['state'],
+                zipcode = data['shipping']['address'],
+        )
+
+    return JsonResponse("Payment completed..", safe=False)
